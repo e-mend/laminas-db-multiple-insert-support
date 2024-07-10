@@ -1,5 +1,5 @@
 {
-    "name": "laminas/laminas-db",
+    "name": "e-mend/laminas-db",
     "description": "Database abstraction layer, SQL abstraction, result set abstraction, and RowDataGateway and TableDataGateway implementations",
     "license": "BSD-3-Clause",
     "keywords": [
