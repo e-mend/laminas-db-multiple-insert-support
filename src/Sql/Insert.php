@@ -48,6 +48,9 @@ class Insert extends AbstractPreparableSql
     /** @var array|Select */
     protected $select;
 
+    /** @var bool */
+    protected $isMultiple = false;
+
     /**
      * Constructor
      *
@@ -118,15 +121,58 @@ class Insert extends AbstractPreparableSql
         }
 
         if ($flag === self::VALUES_SET) {
-            $this->columns = $this->isAssocativeArray($values)
-                ? $values
-                : array_combine(array_keys($this->columns), array_values($values));
+            $this->isMultiple = $this->isNestedArray($values);
+
+            if ($this->isMultiple && !$this->hasLengthEqualsColumns($values, count($this->columns[0]))) {
+                throw new Exception\InvalidArgumentException('The number of values does not match the number of columns');  
+            }
+
+            if ($this->isMultiple) {
+                if (!$this->isAssocativeArray($values[0])) {
+                    $values[0] = array_combine(array_keys($this->columns), array_values($values[0]));
+                    $this->columns = $values;
+                } else {
+                    $this->columns = $values;
+                }
+
+                return $this;
+            }
+
+            $this->columns = $this->isAssocativeArray($values) ? $values : array_combine(array_keys($this->columns), array_values($values));
         } else {
             foreach ($values as $column => $value) {
                 $this->columns[$column] = $value;
             }
         }
+
         return $this;
+    }
+
+    /**
+     * Check if array is nested
+     * @param array $array
+     * @return bool
+     */
+    private function isNestedArray(array $array)
+    {
+        return count(array_filter($array, 'is_array')) === count($array);
+    }
+
+    /**
+     * Check if array has length
+     * @param array $array
+     * @param int $count
+     * @return bool
+     */
+    private function hasLengthEqualsColumns(array $nestedArray, int $count)
+    {
+        foreach ($nestedArray as $value) {
+            if (count($value) !== $count) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -176,13 +222,17 @@ class Insert extends AbstractPreparableSql
         if ($this->select) {
             return;
         }
-        if (! $this->columns) {
+        if (!$this->columns) {
             throw new Exception\InvalidArgumentException('values or select should be present');
         }
 
         $columns = [];
-        $values  = [];
-        $i       = 0;
+        $values = [];
+        $i = 0;
+
+        if ($this->isMultiple) {
+          return $this->mountMultipleInsert($platform, $driver, $parameterContainer);  
+        }
 
         foreach ($this->columns as $column => $value) {
             $columns[] = $platform->quoteIdentifier($column);
@@ -208,6 +258,63 @@ class Insert extends AbstractPreparableSql
             $this->resolveTable($this->table, $platform, $driver, $parameterContainer),
             implode(', ', $columns),
             implode(', ', $values)
+        );
+    }
+
+    protected function mountMultipleInsert(
+        PlatformInterface $platform,
+        ?DriverInterface $driver = null,
+        ?ParameterContainer $parameterContainer = null
+    )
+    {
+        $columnsCount = count($this->columns[0]);
+        $insertsCount = count($this->columns);
+        $fullValuesString = '';
+        $innerCount = 0;
+        $outerCount = 0;
+
+        foreach ($this->columns[0] as $column => $value) {
+            $columns[] = $platform->quoteIdentifier($column);
+        }
+
+        foreach ($this->columns as $inserts => $insert) {
+            foreach ($insert as $column => $value) {
+                if (is_scalar($value) && $parameterContainer) {
+                    if ($driver instanceof Pdo) {
+                        $column = 'c_' . $i++;
+                    }
+                    $values[] = $driver->formatParameterName($column);
+                    $parameterContainer->offsetSet($column, $value);
+                } else {
+                    $values[] = $this->resolveColumnValue(
+                        $value,
+                        $platform,
+                        $driver,
+                        $parameterContainer
+                    );
+                }
+
+                if ($innerCount === $columnsCount) {
+                    $fullValuesString .= implode(', ', $values);
+                    $values = [];
+                    $innerCount = 0;
+                }
+
+                $innerCount++;
+            }
+
+            if ($outerCount != $insertsCount) {
+                $fullValuesString .= ")";
+            }
+
+            $outerCount++;
+        }
+
+        return sprintf(
+            $this->specifications[static::SPECIFICATION_INSERT],
+            $this->resolveTable($this->table, $this->platform, $this->driver, $this->parameterContainer),
+            implode(', ', $columns),
+            $fullValuesString
         );
     }
 
